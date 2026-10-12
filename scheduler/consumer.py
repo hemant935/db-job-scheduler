@@ -14,6 +14,7 @@ CPU-heavy handlers still yield every 5ms (sys.getswitchinterval), so heartbeats 
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import queue
@@ -45,6 +46,15 @@ class InFlight:
     # (Python threads can't be killed), but whatever it tries to commit will be fenced.
     abandoned: bool = False
     finishing: bool = False
+
+
+def _check_storable(result: object) -> None:
+    """Fail a job whose result can't be stored as JSON here, on its own worker, instead of letting
+    it break the committer's batch. Deterministic, so retrying is pointless: permanent."""
+    try:
+        json.dumps(result)
+    except (TypeError, ValueError) as e:
+        raise handlers.PermanentError(f"handler returned a non-JSON result: {e}") from None
 
 
 @dataclass
@@ -234,6 +244,7 @@ class Consumer:
         t0 = time.monotonic()
         try:
             result = handlers.get(job.job_type)(ctx, job.payload)
+            _check_storable(result)
             self._faults.maybe_crash("before_complete", job.id)
             inf.finishing = True
             pending = _PendingCommit(job, result)
@@ -305,14 +316,30 @@ class Consumer:
                     batch.append(self._commits.get_nowait())
                 except queue.Empty:
                     break
-            try:
-                with self.pool.connection() as conn:
-                    committed = store.complete_many(conn, self.id, [(p.job, p.result) for p in batch])
+            self._commit_batch(batch)
+
+    def _commit_batch(self, batch: list[_PendingCommit]) -> None:
+        try:
+            with self.pool.connection() as conn:
+                committed = store.complete_many(conn, self.id, [(p.job, p.result) for p in batch])
+            for p in batch:
+                p.done.set_result(p.job.lease_token in committed)
+        except psycopg.OperationalError as e:
+            # DB unreachable: the whole batch failed (or its outcome is unknown). Workers record
+            # failures; anything that did commit fences those, so nothing runs twice by mistake.
+            for p in batch:
+                p.done.set_exception(e)
+        except Exception as e:
+            # A row the DB refused (e.g. a \u0000 in a result) aborts the whole statement. Commit
+            # one by one so a single bad result fails only its own job, not up to 500 healthy ones.
+            if len(batch) > 1:
+                log.warning("batch commit of %d failed (%s); retrying one by one", len(batch), e)
                 for p in batch:
-                    p.done.set_result(p.job.lease_token in committed)
-            except Exception as e:  # whole batch failed atomically; workers record failures
-                for p in batch:
-                    p.done.set_exception(e)
+                    self._commit_batch([p])
+                return
+            batch[0].done.set_exception(
+                handlers.PermanentError(f"result rejected by the database: {type(e).__name__}: {e}")
+            )
 
     def _listen_loop(self) -> None:
         while not self._bg_stop.is_set():

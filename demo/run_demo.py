@@ -2,7 +2,7 @@
 way we can think of, then prove from the database that all five requirements held.
 
     docker compose up -d
-    uv run python demo/run_demo.py            # ~40s
+    uv run python demo/run_demo.py            # ~60s (--skip-scaling: ~40s)
 
 Consumer logs: demo/logs/<consumer-id>.log
 """
@@ -24,6 +24,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from demo import bench  # noqa: E402
 from scheduler import db, report, store  # noqa: E402
 
 LOG_DIR = ROOT / "demo" / "logs"
@@ -45,6 +46,7 @@ KILL_AT = 5.0          # seconds after T0: SIGKILL consumer-2
 NODE_LOSS_DOWNTIME = 8.0  # consumer-2's "machine" stays down longer than the lease -> reaper path
 RESTART_DELAY = 1.5    # supervisor restarts crashed consumers after this long
 SMALL_ORGS = ("globex", "initech", "umbrella")
+SCALE_JOBS, SCALE_JOB_MS, SCALE_SLOTS = 3000, 20, 8  # scenario 5: short scaling run
 
 
 def build_workload(t0: datetime) -> list[dict]:
@@ -220,6 +222,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--timeout", type=float, default=150, help="give up waiting after N seconds")
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--skip-scaling", action="store_true", help="skip the 1-vs-3 consumer throughput run")
     args = ap.parse_args()
     if args.seed is not None:
         random.seed(args.seed)
@@ -311,9 +314,21 @@ def main() -> int:
                   f"{s['duplicate_effects']} jobs with >1 effect")
     ok &= verdict(s["missing_effects"] == 0 and s["effects_on_unsucceeded"] == 0,
                   "every succeeded job has exactly one committed effect; no effect without success")
-    retried = conn.execute(
-        "SELECT count(*) AS n FROM jobs WHERE status = 'succeeded' AND attempts > 1").fetchone()["n"]
-    print(f"  ({retried} jobs needed more than one attempt and still committed exactly once)")
+    # Be explicit about what "exactly-once" means: a handler can run more than once (a crash after
+    # it started, before its commit), but only one run's result is ever committed.
+    rerun = conn.execute(
+        """
+        SELECT count(*) AS jobs, coalesce(sum(n), 0) AS claims,
+               count(*) FILTER (WHERE crashed) AS by_crash, count(*) FILTER (WHERE NOT crashed) AS by_error
+        FROM (SELECT a.job_id, count(*) AS n,
+                     bool_or(a.outcome IN ('lease_expired', 'owner_restarted', 'fenced')) AS crashed
+                FROM job_attempts a JOIN jobs j ON j.id = a.job_id
+               WHERE j.status = 'succeeded' GROUP BY a.job_id HAVING count(*) > 1) x
+        """).fetchone()
+    print(f"\n  Execution is at-least-once, commit is exactly-once: {rerun['jobs']} succeeded jobs were picked\n"
+          f"  up more than once ({rerun['by_crash']} because their consumer crashed, {rerun['by_error']} retried\n"
+          f"  after a handler error; {rerun['claims']} pickups in total). Each of them has exactly one committed\n"
+          f"  effect. Side effects outside this database get the job's stable idempotency_key for dedupe.")
     results["exactly-once"] = ok
 
     # 2 ------------------------------------------------------------------------------------------
@@ -414,13 +429,45 @@ def main() -> int:
     ok &= verdict(slo["p95"] < 1.0,
                   f"drift SLO p95 < 1s over all {slo['n']} future-scheduled jobs: p95 {slo['p95'] * 1000:.0f}ms, "
                   f"max {slo['max']:.2f}s (consumers crashing + acme flooding throughout)")
+    # acme's jobs were all due at once, far beyond its cap, so they wait in line. That is capacity,
+    # not scheduler drift: show its wait, and show it ran at its cap the whole time it had a backlog.
+    acme = conn.execute(
+        """
+        SELECT count(*) AS n,
+               percentile_cont(0.5)  WITHIN GROUP (ORDER BY extract(epoch FROM first_started_at - scheduled_at)) AS p50,
+               percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM first_started_at - scheduled_at)) AS p95
+        FROM jobs WHERE org_id = 'acme' AND status = 'succeeded'
+        """).fetchone()
+    cap = ORGS["acme"][0]
+    backlogged = [by_org.get("acme", 0) for _, by_org, backlog in sampler.timeline if backlog > 0]
+    util = sum(backlogged) / len(backlogged) / cap if backlogged else 0.0
+    print(f"\n  acme ({acme['n']} jobs due at the same moment, cap {cap}): wait p50 {acme['p50']:.1f}s, "
+          f"p95 {acme['p95']:.1f}s. That is queueing behind\n  its own burst, not drift: while it had a backlog "
+          f"it averaged {util * cap:.1f} of {cap} running jobs. Lower wait needs a\n  higher cap or more consumers.")
+    ok &= verdict(util >= 0.8, f"flooding org kept at its cap while backlogged: {util:.0%} of cap on average "
+                  f"(stranded jobs hold their slot until reclaimed)")
     results["schedule"] = ok
 
     # 5 ------------------------------------------------------------------------------------------
-    banner("5. SCALING")
-    print("  Throughput vs consumer count is measured by demo/bench.py; results and the analysis of where\n"
-          "  each scaling approach hits its ceiling are in DESIGN.md (section 'Scaling').")
-    print("    uv run python demo/bench.py --jobs 20000 --consumers 1 2 4 8")
+    banner("5. SCALING  (same backlog drained by 1, then 3 consumer processes)")
+    if args.skip_scaling:
+        print("  skipped (--skip-scaling)")
+    else:
+        # Runs last: the benchmark resets the database.
+        print(f"  {SCALE_JOBS} I/O-bound jobs ({SCALE_JOB_MS}ms each) across 10 orgs, {SCALE_SLOTS} threads per consumer")
+        runs = []
+        for n in (1, 3):
+            runs.append(bench.run_once(n, SCALE_JOBS, SCALE_SLOTS, 10, SCALE_JOB_MS))
+            print(f"    {n} consumer(s): {runs[-1]['jobs_per_s']} jobs/s")
+        print(report.table(runs))
+        speedup = runs[1]["jobs_per_s"] / runs[0]["jobs_per_s"]
+        ok = verdict(speedup >= 2.0, f"3 consumers drain {speedup:.1f}x faster than 1 (ideal 3.0x)")
+        ok &= verdict(all(r["duplicates"] == 0 for r in runs), "no duplicates at either scale")
+        results["scaling"] = ok
+    print("  Where each approach hits its ceiling (measured with demo/bench.py, see DESIGN.md 'Scaling'):\n"
+          "    more threads   ~2k jobs/s per process of scheduler overhead; CPU-bound jobs need processes (GIL)\n"
+          "    more processes linear while job work dominates; ~8 connections each -> PgBouncer past ~50-100\n"
+          "    one Postgres   WAL + vacuum on the hot table; ~10-20k jobs/s on dedicated NVMe -> shard by org_id")
 
     banner("SUMMARY")
     for name, passed in results.items():

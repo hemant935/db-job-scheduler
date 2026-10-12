@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime, timezone
 
-from scheduler import db, report, store
+from scheduler import handlers, report, store
 from scheduler.config import ConsumerConfig
-from scheduler.consumer import Consumer
+from scheduler.consumer import Consumer, _PendingCommit
 
 
 def _run_until_drained(consumers: list[Consumer], conn, timeout: float = 30) -> None:
@@ -50,3 +51,41 @@ def test_timeout_reschedules_and_fences_late_result(conn, dsn):
     row = conn.execute("SELECT status, last_error FROM jobs WHERE id = %s", (jid,)).fetchone()
     assert row["status"] == "dead" and "timeout" in row["last_error"]
     assert report.integrity(conn)["effects"] == 0
+
+
+@handlers.register("test.bad_result")
+def _bad_result(ctx, payload):
+    return {"at": datetime.now(timezone.utc)}  # not JSON-serialisable
+
+
+def test_non_json_result_fails_only_its_own_job(conn, dsn):
+    store.upsert_org(conn, "a", max_concurrency=50)
+    bad = store.enqueue(conn, "a", "test.bad_result")
+    store.enqueue_many(conn, [{"org_id": "a", "job_type": "noop"} for _ in range(20)])
+    cfg = ConsumerConfig(slots=8, slow_slots=0, lease_seconds=5, heartbeat_seconds=1, poll_seconds=0.1)
+    _run_until_drained([Consumer(cfg, "t", dsn=dsn)], conn, timeout=10)
+
+    row = conn.execute("SELECT status, attempts, last_error FROM jobs WHERE id = %s", (bad,)).fetchone()
+    assert row["status"] == "dead" and row["attempts"] == 1 and "non-JSON" in row["last_error"]
+    healthy = conn.execute(
+        "SELECT count(*) FILTER (WHERE status = 'succeeded' AND attempts = 1) AS ok, count(*) AS n"
+        " FROM jobs WHERE id <> %s", (bad,)).fetchone()
+    assert healthy["ok"] == healthy["n"] == 20
+
+
+def test_row_rejected_by_db_does_not_sink_the_batch(conn, dsn):
+    # Valid JSON that Postgres jsonb refuses (\u0000) aborts the whole batch statement; the
+    # committer must fall back to per-job commits so only that job fails.
+    store.upsert_org(conn, "a", max_concurrency=50)
+    store.enqueue_many(conn, [{"org_id": "a", "job_type": "noop"} for _ in range(5)])
+    c = Consumer(ConsumerConfig(slots=5, slow_slots=0), "t", dsn=dsn)
+    try:
+        jobs = store.claim(conn, c.id, "fast", 5, 30)
+        batch = [_PendingCommit(j, {"s": "\x00"} if i == 2 else {"i": i}) for i, j in enumerate(jobs)]
+        c._commit_batch(batch)
+        assert [p.done.exception() is None and p.done.result() for p in batch] == [True, True, False, True, True]
+        assert isinstance(batch[2].done.exception(), handlers.PermanentError)
+        assert report.integrity(conn)["effects"] == 4
+    finally:
+        c._executor.shutdown()
+        c.pool.close()

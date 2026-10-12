@@ -41,7 +41,7 @@ Buttons drive every scenario: add work (flood acme, scheduled jobs, long reports
 start a normal or chaos consumer, and **Kill -9 / Stop / Restart** any consumer the dashboard
 started. It binds to 127.0.0.1 only; stopping it (Ctrl-C) also stops the consumers it launched.
 
-## The demo (`demo/run_demo.py`, ~40s)
+## The demo (`demo/run_demo.py`, ~60s)
 
 1. Creates 4 orgs and enqueues **306 jobs**. `acme` floods 250 short jobs plus 3 long reports;
    `globex`, `initech` and `umbrella` submit a handful each, mostly scheduled 1–25s in the future.
@@ -55,12 +55,16 @@ started. It binds to 127.0.0.1 only; stopping it (Ctrl-C) also stops the consume
      lease, so the surviving consumers must reap its jobs.
    - A deterministic **zombie** check: a worker stalls past its lease, the job is re-run elsewhere,
      then the zombie tries to commit.
-4. Verifies from the database and prints PASS/FAIL for each requirement:
+4. Drains the same backlog with 1 and then 3 consumers to show throughput scaling
+   (`--skip-scaling` leaves this out and saves ~20s).
+5. Verifies from the database and prints PASS/FAIL for each of the five requirements:
 
 ```
 1. EXACTLY-ONCE
   [PASS] no job lost: 305 succeeded + 1 dead-lettered = 306 of 306 (0 stuck in scheduled/running)
   [PASS] no duplicates: 305 effect rows for 305 succeeded jobs, 0 jobs with >1 effect
+  Execution is at-least-once, commit is exactly-once: 16 succeeded jobs were picked
+  up more than once (12 because their consumer crashed, 4 retried after a handler error) ...
 2. CRASHES AT ANY POINT
   [PASS] hard crashes hit all three points: after claim, mid-execution, before commit (+ SIGKILL)
   [PASS] all 4 stranded jobs recovered and re-run: 4 committed exactly once
@@ -76,8 +80,17 @@ started. It binds to 127.0.0.1 only; stopping it (Ctrl-C) also stops the consume
   [PASS] long jobs never took a consumer's fast slots: peak slow-lane jobs per consumer 2 <= 2 of 6
 4. SCHEDULE ADHERENCE
   [PASS] no job started before its scheduled_at
-  [PASS] drift SLO p95 < 1s over all 53 future-scheduled jobs: p95 146ms, max 0.90s
+  [PASS] drift SLO p95 < 1s over all 53 future-scheduled jobs: p95 130ms, max 0.23s
+  [PASS] flooding org kept at its cap while backlogged: 98% of cap on average
+5. SCALING
+    1 consumer(s): 299 jobs/s
+    3 consumer(s): 887 jobs/s
+  [PASS] 3 consumers drain 3.0x faster than 1 (ideal 3.0x)
+  [PASS] no duplicates at either scale
 ```
+
+The demo wipes the database it runs against. To keep a dashboard session's data, point it at
+another database: `DATABASE_URL=postgresql://scheduler:scheduler@localhost:5433/scheduler_test uv run python demo/run_demo.py`.
 
 Each consumer's log is written to `demo/logs/<consumer>.log`. Grep it for `FAULT INJECTED`,
 `reaped`, `recovered job`, or `FENCED`.
@@ -123,8 +136,9 @@ uv run pytest      # uses the scheduler_test database; never touches demo data
 
 The tests cover: 16 threads racing to claim 3,000 jobs (no overlaps); zombie fencing; heartbeat
 renewal; dead-lettering of poison jobs; retry backoff; permanent errors; no early starts; org
-interleaving, caps and weights; lane separation; idempotent enqueue; restart reclaim; and
-end-to-end consumers draining a mixed workload, including timeouts.
+interleaving, caps and weights; lane separation; idempotent enqueue; restart reclaim;
+end-to-end consumers draining a mixed workload, including timeouts; and a bad job result (not
+JSON, or refused by Postgres) failing only its own job instead of the whole commit batch.
 
 ## Layout
 

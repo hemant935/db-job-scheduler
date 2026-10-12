@@ -4,4 +4,3 @@ __pycache__/
 .pytest_cache/
 demo/logs/
 .DS_Store
-.claude/

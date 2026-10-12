@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scheduler Dashboard</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --ring: rgba(11,11,11,0.10);
+  --wash: rgba(11,11,11,0.04);
+  --org-acme: #2a78d6;
+  --org-beta: #eb6834;
+  --org-gamma: #1baf7a;
+  --org-other: #898781;
+  --good: #0ca30c;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+  --good-text: #006300;
+  --btn: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
+    --org-acme: #3987e5; --org-beta: #d95926; --org-gamma: #199e70;
+    --good-text: #0ca30c; --btn: #242423;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
+  --org-acme: #3987e5; --org-beta: #d95926; --org-gamma: #199e70;
+  --good-text: #0ca30c; --btn: #242423;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--page); color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 1320px; margin: 0 auto; padding: 20px 16px 48px; }
+header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+h1 { font-size: 20px; margin: 0; font-weight: 650; }
+h2 { font-size: 14px; margin: 0 0 2px; font-weight: 600; }
+.sub { color: var(--ink-2); font-size: 13px; }
+.live { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 13px; }
+.live .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+.live.off .dot { background: var(--critical); }
+
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; margin-bottom: 16px; }
+.group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.group > .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin-right: 2px; }
+button {
+  font: inherit; font-size: 13px; color: var(--ink); background: var(--btn);
+  border: 1px solid var(--ring); border-radius: 8px; padding: 6px 11px; cursor: pointer;
+}
+button:hover { background: var(--wash); }
+button:focus-visible { outline: 2px solid var(--org-acme); outline-offset: 1px; }
+button.danger { color: var(--critical); }
+button.small { padding: 3px 8px; font-size: 12px; }
+button:disabled { opacity: .45; cursor: default; }
+
+.toast {
+  min-height: 22px; margin: -6px 0 12px; color: var(--ink-2); font-size: 13px;
+}
+.toast b { color: var(--ink); font-weight: 600; }
+
+.tiles { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.tile, .card { background: var(--surface); border: 1px solid var(--ring); border-radius: 12px; }
+.tile { padding: 12px 14px; }
+.tile .k { color: var(--ink-2); font-size: 12px; }
+.tile .v { font-size: 26px; font-weight: 650; line-height: 1.2; margin-top: 2px; }
+.tile .note { font-size: 12px; color: var(--muted); }
+.tile.check .v { font-size: 17px; display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.icon { display: inline-flex; width: 18px; height: 18px; border-radius: 50%; align-items: center;
+  justify-content: center; font-size: 11px; font-weight: 700; color: #fff; flex: none; }
+
+.grid { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 14px; align-items: start; }
+.card { padding: 14px 16px; }
+.stack > .card + .card { margin-top: 14px; }
+.card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.legend { display: flex; gap: 12px; flex-wrap: wrap; color: var(--ink-2); font-size: 12px; }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.key-rect { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.key-line { width: 14px; height: 2px; border-radius: 1px; display: inline-block; }
+
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: 190px; overflow: visible; }
+.chart text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart .dlabel { fill: var(--ink-2); font-size: 11px; }
+.tip {
+  position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--ring);
+  border-radius: 8px; padding: 7px 9px; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.12);
+  min-width: 120px; display: none; z-index: 2;
+}
+.tip .t { color: var(--muted); margin-bottom: 3px; }
+.tip .row { display: flex; align-items: center; gap: 7px; }
+.tip .row b { font-variant-numeric: tabular-nums; min-width: 22px; text-align: right; }
+.tip .row span.n { color: var(--ink-2); }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--grid); }
+td { padding: 7px 8px; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: none; }
+td.num, th.num { text-align: right; }
+.org-cell { display: flex; align-items: center; gap: 7px; font-weight: 600; }
+.meter { display: flex; align-items: center; gap: 8px; }
+.meter .bar { position: relative; width: 90px; height: 8px; background: var(--grid); border-radius: 4px; overflow: hidden; }
+.meter .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; }
+
+.consumer { border: 1px solid var(--ring); border-radius: 10px; padding: 10px 12px; }
+.consumer + .consumer { margin-top: 8px; }
+.consumer .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.consumer .name { font-weight: 600; display: flex; align-items: center; gap: 7px; }
+.consumer .meta { color: var(--ink-2); font-size: 12px; margin-top: 3px; }
+.consumer .actions { display: flex; gap: 5px; }
+.slots { display: flex; gap: 3px; margin-top: 7px; }
+.slots i { width: 18px; height: 8px; border-radius: 2px; background: var(--grid); }
+.alert {
+  margin-top: 8px; font-size: 12px; border-radius: 8px; padding: 7px 9px; background: var(--wash);
+  display: flex; gap: 7px; align-items: flex-start; color: var(--ink);
+}
+.empty { color: var(--muted); font-size: 13px; padding: 6px 0; }
+
+.tabs { display: flex; gap: 4px; }
+.tabs button[aria-selected="true"] { background: var(--wash); font-weight: 600; }
+.events td { font-size: 12.5px; }
+.events td:nth-child(1), .events td:nth-child(7) { white-space: nowrap; }
+.badge { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.err { color: var(--muted); max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.help { color: var(--ink-2); font-size: 13px; margin: 0; padding-left: 18px; }
+.help li { margin: 3px 0; }
+
+@media (max-width: 1100px) {
+  .grid { grid-template-columns: 1fr; }
+  .tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hide-sm { display: none; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Job scheduler</h1>
+    <span class="sub">Postgres-only queue · 3 orgs · consumers with worker threads</span>
+    <span class="live" id="live"><span class="dot"></span><span id="live-text">connecting…</span></span>
+  </header>
+
+  <div class="toolbar">
+    <div class="group">
+      <span class="label">Add work</span>
+      <button data-scenario="flood" title="300 short jobs for acme, all due now">Flood acme ×300</button>
+      <button data-scenario="scheduled" title="20 jobs for beta scheduled 5–25 s in the future">Schedule beta ×20</button>
+      <button data-scenario="long" title="6 × 20 s reports for gamma (slow lane)">Long reports ×6</button>
+      <button data-scenario="flaky" title="8 jobs that fail half their attempts">Flaky ×8</button>
+      <button data-scenario="poison" title="One job that always fails → dead letter after 3 attempts">Poison job</button>
+    </div>
+    <div class="group">
+      <span class="label">Consumers</span>
+      <button id="add-consumer">+ Consumer</button>
+      <button id="add-chaos" title="Crashes itself (os._exit) on ~5% of jobs, mid-execution">+ Chaos consumer</button>
+    </div>
+    <div class="group">
+      <button id="reset" class="danger">Reset data</button>
+      <button id="theme" title="Toggle light / dark">◐</button>
+    </div>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <section class="tiles" aria-label="Totals">
+    <div class="tile"><div class="k">Jobs</div><div class="v" id="t-total">–</div><div class="note">all time</div></div>
+    <div class="tile"><div class="k">Waiting</div><div class="v" id="t-waiting">–</div><div class="note" id="t-waiting-note">scheduled</div></div>
+    <div class="tile"><div class="k">Running</div><div class="v" id="t-running">–</div><div class="note">right now</div></div>
+    <div class="tile"><div class="k">Succeeded</div><div class="v" id="t-succeeded">–</div><div class="note" id="t-retried">&nbsp;</div></div>
+    <div class="tile"><div class="k">Dead-lettered</div><div class="v" id="t-dead">–</div><div class="note">out of attempts</div></div>
+    <div class="tile check"><div class="k">Exactly-once check</div><div class="v" id="t-check">–</div><div class="note" id="t-check-note">&nbsp;</div></div>
+  </section>
+
+  <div class="grid">
+    <div class="stack">
+      <section class="card">
+        <div class="card-head">
+          <div><h2>Running jobs by org</h2><div class="sub">Stacked · last 3 minutes · each org is capped at 5</div></div>
+          <div class="legend" id="legend-running"></div>
+        </div>
+        <div class="chart" id="chart-running"><svg></svg><div class="tip"></div></div>
+      </section>
+      <section class="card">
+        <div class="card-head">
+          <div><h2>Due but waiting, by org</h2><div class="sub">Backlog of jobs past their scheduled time · last 3 minutes</div></div>
+          <div class="legend" id="legend-waiting"></div>
+        </div>
+        <div class="chart" id="chart-waiting"><svg></svg><div class="tip"></div></div>
+      </section>
+      <section class="card">
+        <div class="card-head"><div><h2>Organizations</h2><div class="sub">Fairness and schedule adherence (wait = first start − scheduled time)</div></div></div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr>
+              <th>Org</th><th>Running / cap</th><th class="num">Waiting</th><th class="num">Succeeded</th>
+              <th class="num">Dead</th><th class="num">Wait p50</th><th class="num">Wait p95</th><th class="num hide-sm">Max</th><th class="num hide-sm">Started early</th>
+            </tr></thead>
+            <tbody id="orgs"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <div class="stack">
+      <section class="card">
+        <div class="card-head"><div><h2>Consumers</h2><div class="sub">6 worker threads each · at most 2 for long jobs</div></div></div>
+        <div id="consumers"></div>
+      </section>
+      <section class="card">
+        <h2>Try this</h2>
+        <ol class="help">
+          <li>Add 2 consumers, then <b>Flood acme</b> and <b>Schedule beta</b>. acme stays at its cap of 5; beta's jobs start on time.</li>
+          <li><b>Long reports</b>: they never take more than 2 of a consumer's 6 slots.</li>
+          <li><b>Kill -9</b> a busy consumer. Its jobs show as stranded until the lease runs out (~10 s), then another consumer takes them.</li>
+          <li>Kill one again and press <b>Restart</b> right away: it reclaims its jobs instantly.</li>
+          <li>Watch the <b>Exactly-once check</b>: lost and duplicates stay at 0.</li>
+        </ol>
+      </section>
+    </div>
+  </div>
+
+  <section class="card events" style="margin-top:14px">
+    <div class="card-head">
+      <div><h2>Attempt log</h2><div class="sub">Every claim of a job, newest first</div></div>
+      <div class="tabs" role="tablist">
+        <button role="tab" aria-selected="true" data-tab="notable">Failures &amp; recoveries</button>
+        <button role="tab" aria-selected="false" data-tab="all">Everything</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>When</th><th>Outcome</th><th>Job</th><th>Org</th><th class="hide-sm">Type</th><th class="num">Attempt</th><th>Consumer</th><th class="hide-sm">Detail</th></tr></thead>
+        <tbody id="events"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const ORGS = ["acme", "beta", "gamma"];
+const orgColor = o => `var(--org-${ORGS.includes(o) ? o : "other"})`;
+const OUTCOMES = {
+  succeeded:       { label: "succeeded",               color: "var(--good)",     icon: "✓" },
+  running:         { label: "running",                 color: "var(--muted)",    icon: "•" },
+  failed:          { label: "failed → retry",          color: "var(--warning)",  icon: "!" },
+  timeout:         { label: "timed out",               color: "var(--warning)",  icon: "!" },
+  lease_expired:   { label: "consumer died → reaped",  color: "var(--serious)",  icon: "↺" },
+  owner_restarted: { label: "consumer died → reclaimed on restart", color: "var(--serious)", icon: "↺" },
+  fenced:          { label: "late result rejected",    color: "var(--critical)", icon: "×" },
+};
+const STATE = {
+  running: { label: "running",  color: "var(--good)",     icon: "✓" },
+  stopped: { label: "stopped",  color: "var(--muted)",    icon: "■" },
+  killed:  { label: "killed (SIGKILL)", color: "var(--critical)", icon: "×" },
+  crashed: { label: "crashed",  color: "var(--critical)", icon: "×" },
+  "dead?": { label: "no heartbeat", color: "var(--serious)", icon: "?" },
+};
+
+let state = null;
+let tab = "notable";
+const hover = { running: null, waiting: null };   // pointer x fraction per chart, survives re-render
+
+// ---- tiny DOM helper: data always goes in via textContent ---------------------------------
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "style") n.style.cssText = v;
+    else if (k === "text") n.textContent = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v);
+  }
+  for (const k of kids.flat()) if (k != null) n.append(k.nodeType ? k : document.createTextNode(String(k)));
+  return n;
+}
+const icon = (s) => el("span", { class: "icon", style: `background:${s.color}`, "aria-hidden": "true", text: s.icon });
+const fmtS = v => v == null ? "–" : v < 1 ? `${Math.round(v * 1000)} ms` : `${v.toFixed(1)} s`;
+const ago = t => { const s = Math.max(0, state.now - t); return s < 60 ? `${s.toFixed(0)}s ago` : `${Math.floor(s / 60)}m ${Math.floor(s % 60)}s ago`; };
+
+// ---- actions ---------------------------------------------------------------------------------
+async function post(path, body) {
+  const toast = document.getElementById("toast");
+  try {
+    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+    const j = await r.json();
+    toast.replaceChildren(el("b", { text: r.ok ? "✓ " : "Error: " }), j.message || j.error || "");
+    poll();
+  } catch (e) { toast.textContent = "Error: " + e; }
+}
+document.querySelectorAll("[data-scenario]").forEach(b => b.addEventListener("click", () => post(`/api/scenario/${b.dataset.scenario}`)));
+document.getElementById("add-consumer").onclick = () => post("/api/consumers");
+document.getElementById("add-chaos").onclick = () => post("/api/consumers", { chaos: true });
+document.getElementById("reset").onclick = () => { if (confirm("Wipe all jobs and history?")) post("/api/reset"); };
+document.getElementById("theme").onclick = () => {
+  const root = document.documentElement;
+  const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  root.dataset.theme = dark ? "light" : "dark";
+  try { localStorage.setItem("theme", root.dataset.theme); } catch (_) {}
+  render();
+};
+try { const t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch (_) {}
+document.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => {
+  tab = b.dataset.tab;
+  document.querySelectorAll("[data-tab]").forEach(x => x.setAttribute("aria-selected", String(x === b)));
+  renderEvents();
+}));
+
+// ---- polling ---------------------------------------------------------------------------------
+async function poll() {
+  const live = document.getElementById("live");
+  try {
+    const r = await fetch("/api/state", { cache: "no-store" });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    state = j;
+    live.classList.remove("off");
+    document.getElementById("live-text").textContent = "live · updates every second";
+    render();
+  } catch (e) {
+    live.classList.add("off");
+    document.getElementById("live-text").textContent = "offline – is the database running?";
+  }
+}
+setInterval(poll, 1000);
+poll();
+
+// ---- render ----------------------------------------------------------------------------------
+function render() {
+  if (!state) return;
+  renderTiles(); renderOrgs(); renderConsumers(); renderEvents();
+  renderChart("running", { stacked: true });
+  renderChart("waiting", { stacked: false });
+}
+
+function renderTiles() {
+  const i = state.integrity, s = id => document.getElementById(id);
+  const waiting = state.orgs.reduce((a, o) => a + o.scheduled, 0);
+  const due = state.history.length ? Object.values(state.history.at(-1).waiting).reduce((a, b) => a + b, 0) : 0;
+  s("t-total").textContent = i.total;
+  s("t-waiting").textContent = waiting;
+  s("t-waiting-note").textContent = `${due} already due · ${waiting - due} in the future`;
+  s("t-running").textContent = state.orgs.reduce((a, o) => a + o.running, 0);
+  s("t-succeeded").textContent = i.succeeded;
+  const retries = (state.outcomes.failed || 0) + (state.outcomes.lease_expired || 0) + (state.outcomes.owner_restarted || 0) + (state.outcomes.timeout || 0);
+  s("t-retried").textContent = retries ? `${retries} attempts retried along the way` : " ";
+  s("t-dead").textContent = i.dead;
+  const lost = i.missing_effects + i.effects_on_unsucceeded;
+  const ok = i.duplicate_effects === 0 && lost === 0;
+  s("t-check").replaceChildren(icon(ok ? { color: "var(--good)", icon: "✓" } : { color: "var(--critical)", icon: "×" }),
+    ok ? "Passing" : "Violated");
+  s("t-check-note").textContent = `${i.duplicate_effects} duplicates · ${lost} lost · ${i.effects} results for ${i.succeeded} successes`;
+}
+
+function renderOrgs() {
+  const rows = state.orgs.map(o => {
+    const due = state.history.length ? (state.history.at(-1).waiting[o.org] || 0) : 0;
+    const pct = Math.min(100, (o.running / o.cap) * 100);
+    return el("tr", {},
+      el("td", {}, el("span", { class: "org-cell" }, el("span", { class: "key-rect", style: `background:${orgColor(o.org)}` }), o.org)),
+      el("td", {}, el("span", { class: "meter" },
+        el("span", { class: "bar", role: "img", "aria-label": `${o.running} of ${o.cap}` },
+          el("span", { class: "fill", style: `width:${pct}%;background:${orgColor(o.org)}` })),
+        `${o.running} / ${o.cap}`)),
+      el("td", { class: "num", title: `${due} due now, ${o.scheduled - due} scheduled for later` }, o.scheduled),
+      el("td", { class: "num" }, o.succeeded),
+      el("td", { class: "num" }, o.dead),
+      el("td", { class: "num" }, fmtS(o.p50_wait_s)),
+      el("td", { class: "num" }, fmtS(o.p95_wait_s)),
+      el("td", { class: "num hide-sm" }, fmtS(o.max_wait_s)),
+      el("td", { class: "num hide-sm" }, o.started_early ?? 0));
+  });
+  document.getElementById("orgs").replaceChildren(...rows);
+}
+
+let consumerSig = "";
+function renderConsumers() {
+  const box = document.getElementById("consumers");
+  // Rebuild only when something changed: rebuilding every second would swap buttons out from
+  // under a click. Otherwise just tick the lease countdowns in place.
+  const sig = JSON.stringify([
+    state.consumers.map(c => [c.name, c.state, c.pid, c.managed, c.faults, c.holding, c.stranded && c.stranded.job_ids]),
+    state.stranded.map(s => [s.owner, s.job_ids])]);
+  if (sig === consumerSig) {
+    const left = {};
+    for (const c of state.consumers) if (c.stranded) left[c.id] = c.stranded;
+    for (const s of state.stranded) left[s.owner] = s;
+    box.querySelectorAll("[data-owner]").forEach(n => { const s = left[n.dataset.owner]; if (s) n.textContent = whenText(s); });
+    return;
+  }
+  consumerSig = sig;
+  const kids = [];
+  if (!state.consumers.length) kids.push(el("div", { class: "empty", text: "No consumers yet. Press “+ Consumer” (two or three is a good start)." }));
+  for (const c of state.consumers) {
+    const st = STATE[c.state] || STATE.stopped;
+    const alive = c.state === "running";
+    const actions = el("div", { class: "actions" });
+    if (c.managed && alive) {
+      actions.append(
+        el("button", { class: "small danger", title: "SIGKILL: hard crash, no cleanup", onclick: () => post(`/api/consumers/${c.name}/kill`) }, "Kill -9"),
+        el("button", { class: "small", title: "SIGTERM: stop claiming, finish in-flight jobs", onclick: () => post(`/api/consumers/${c.name}/stop`) }, "Stop"));
+    } else if (c.managed) {
+      actions.append(el("button", { class: "small", title: "Start again with the same name", onclick: () => post(`/api/consumers/${c.name}/restart`) }, "Restart"));
+    }
+    const slots = el("div", { class: "slots", "aria-label": `${c.inflight} of 6 slots busy` });
+    for (let k = 0; k < 6; k++) slots.append(el("i", { style: k < c.inflight ? "background:var(--ink-2)" : "" }));
+    const card = el("div", { class: "consumer" },
+      el("div", { class: "top" },
+        el("span", { class: "name" }, icon(st), c.name),
+        actions),
+      el("div", { class: "meta" },
+        `${st.label}${c.pid ? " · pid " + c.pid : ""}${c.managed ? "" : " · started outside the dashboard"}${c.faults.length ? " · chaos: crashes on ~5% of jobs" : ""}`),
+      alive ? slots : null,
+      alive && c.holding.length ? el("div", { class: "meta", text: `working on job${c.holding.length > 1 ? "s" : ""} ${c.holding.join(", ")}` }) : null);
+    if (c.stranded) card.append(strandedNote(c.stranded, c.id));
+    kids.push(card);
+  }
+  for (const s of state.stranded) {
+    kids.push(el("div", { class: "consumer" }, el("div", { class: "meta", text: `Old incarnation ${s.owner}` }), strandedNote(s, s.owner)));
+  }
+  box.replaceChildren(...kids);
+}
+const whenText = s => s.lease_left_s > 0
+  ? `lease expires in ${s.lease_left_s.toFixed(1)} s, then another consumer's reaper requeues them`
+  : "lease expired; requeue happens on the next reaper pass";
+function strandedNote(s, owner) {
+  return el("div", { class: "alert" }, icon({ color: "var(--serious)", icon: "!" }),
+    el("span", {}, el("b", { text: `Stranded job${s.job_ids.length > 1 ? "s" : ""} ${s.job_ids.join(", ")}` }), " · ",
+      el("span", { "data-owner": owner, text: whenText(s) }), ". Restarting this consumer reclaims them immediately."));
+}
+
+function renderEvents() {
+  if (!state) return;
+  const list = tab === "notable" ? state.notable : state.events;
+  const rows = list.map(e => {
+    const o = OUTCOMES[e.outcome] || OUTCOMES.running;
+    return el("tr", {},
+      el("td", { text: ago(e.at) }),
+      el("td", {}, el("span", { class: "badge" }, icon(o), o.label)),
+      el("td", { text: `#${e.job_id}` }),
+      el("td", {}, el("span", { class: "org-cell", style: "font-weight:400" }, el("span", { class: "key-rect", style: `background:${orgColor(e.org_id)}` }), e.org_id)),
+      el("td", { class: "hide-sm", text: e.job_type }),
+      el("td", { class: "num", text: e.attempt }),
+      el("td", { text: e.consumer_id }),
+      el("td", { class: "err hide-sm", title: e.error || "", text: e.outcome === "succeeded" || e.outcome === "running" ? "" : (e.error || "") }));
+  });
+  if (!rows.length) rows.push(el("tr", {}, el("td", { colspan: "8", class: "empty",
+    text: tab === "notable" ? "Nothing yet. Failures, crashes and recoveries show up here." : "No attempts yet." })));
+  document.getElementById("events").replaceChildren(...rows);
+}
+
+// ---- charts (hand-built SVG) ----------------------------------------------------------------
+const SVGNS = "http://www.w3.org/2000/svg";
+const sv = (tag, attrs = {}) => { const n = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v); return n; };
+const WINDOW_S = 180;
+
+function seriesFor(key) {
+  const seen = new Set(ORGS);
+  for (const s of state.history) for (const o of Object.keys(s[key])) seen.add(ORGS.includes(o) ? o : "other");
+  return [...seen].filter(o => ORGS.includes(o) || o === "other");
+}
+const val = (sample, key, org) => org === "other"
+  ? Object.entries(sample[key]).filter(([o]) => !ORGS.includes(o)).reduce((a, [, v]) => a + v, 0)
+  : (sample[key][org] || 0);
+
+function niceMax(v) {
+  if (v <= 5) return 5;
+  const step = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * step >= v) return m * step;
+  return 10 * step;
+}
+
+function renderChart(key, { stacked }) {
+  const host = document.getElementById(`chart-${key}`);
+  const svg = host.querySelector("svg"), tip = host.querySelector(".tip");
+  const W = Math.max(320, host.clientWidth), H = 190;
+  const m = { l: 34, r: 92, t: 8, b: 22 };
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.replaceChildren();
+
+  const series = seriesFor(key).filter(o => o !== "other" || state.history.some(s => val(s, key, "other") > 0));
+  const hist = state.history;
+  const now = state.now, t0 = now - WINDOW_S;
+  const x = t => m.l + ((t - t0) / WINDOW_S) * iw;
+  const totals = hist.map(s => stacked ? series.reduce((a, o) => a + val(s, key, o), 0) : Math.max(0, ...series.map(o => val(s, key, o))));
+  const ymax = niceMax(Math.max(1, ...totals));
+  const y = v => m.t + ih - (v / ymax) * ih;
+
+  // legend (rect for areas, line for lines), same order as the stack
+  const legend = document.getElementById(`legend-${key}`);
+  legend.replaceChildren(...series.map(o => el("span", {},
+    el("span", { class: stacked ? "key-rect" : "key-line", style: `background:${orgColor(o)}` }), o)));
+
+  // grid + y ticks
+  for (const v of [0, ymax / 2, ymax]) {
+    svg.append(sv("line", { x1: m.l, x2: m.l + iw, y1: y(v), y2: y(v), stroke: v === 0 ? "var(--axis)" : "var(--grid)", "stroke-width": 1 }));
+    const tx = sv("text", { x: m.l - 6, y: y(v) + 4, "text-anchor": "end" }); tx.textContent = Number.isInteger(v) ? v : v.toFixed(1); svg.append(tx);
+  }
+  for (const s of [180, 120, 60, 0]) {
+    const tx = sv("text", { x: x(now - s), y: H - 6, "text-anchor": s === 180 ? "start" : s === 0 ? "end" : "middle" });
+    tx.textContent = s === 0 ? "now" : `−${s / 60}m`; svg.append(tx);
+  }
+
+  if (hist.length < 2) {
+    const tx = sv("text", { x: m.l + iw / 2, y: m.t + ih / 2, "text-anchor": "middle" });
+    tx.textContent = "collecting samples…"; svg.append(tx); tip.style.display = "none"; return;
+  }
+
+  const pts = hist.filter(s => s.t >= t0 - 1);
+  const labels = [];
+  if (stacked) {
+    const base = pts.map(() => 0);
+    for (const o of series) {
+      const top = pts.map((s, i) => base[i] + val(s, key, o));
+      let d = pts.map((s, i) => `${i ? "L" : "M"}${x(s.t).toFixed(1)},${y(top[i]).toFixed(1)}`).join("");
+      for (let i = pts.length - 1; i >= 0; i--) d += `L${x(pts[i].t).toFixed(1)},${y(base[i]).toFixed(1)}`;
+      svg.append(sv("path", { d: d + "Z", fill: orgColor(o), stroke: "var(--surface)", "stroke-width": 2, "stroke-linejoin": "round" }));
+      const last = pts.length - 1, v = top[last] - base[last];
+      if (v > 0) labels.push({ o, v, y: (y(top[last]) + y(base[last])) / 2 });
+      top.forEach((t, i) => base[i] = t);
+    }
+  } else {
+    for (const o of series) {
+      const d = pts.map((s, i) => `${i ? "L" : "M"}${x(s.t).toFixed(1)},${y(val(s, key, o)).toFixed(1)}`).join("");
+      svg.append(sv("path", { d, fill: "none", stroke: orgColor(o), "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+      const v = val(pts.at(-1), key, o);
+      if (v > 0) labels.push({ o, v, y: y(v) });
+    }
+  }
+  // direct labels at the right edge, nudged apart so they never collide, kept inside the plot
+  labels.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < labels.length; i++) labels[i].y = Math.max(labels[i].y, labels[i - 1].y + 13);
+  const floor = m.t + ih - 4;
+  for (let i = labels.length - 1; i >= 0; i--) {
+    labels[i].y = Math.min(labels[i].y, i === labels.length - 1 ? floor : labels[i + 1].y - 13);
+  }
+  const lastX = x(pts.at(-1).t);
+  for (const l of labels) {
+    svg.append(sv("rect", { x: lastX + 6, y: l.y - 4, width: 8, height: 8, rx: 2, fill: orgColor(l.o) }));
+    const tx = sv("text", { x: lastX + 18, y: l.y + 4, class: "dlabel" }); tx.textContent = `${l.o} ${l.v}`; svg.append(tx);
+  }
+
+  // hover layer: crosshair snaps to the nearest sample; one tooltip lists every org
+  const hit = sv("rect", { x: m.l, y: m.t, width: iw, height: ih, fill: "transparent" });
+  svg.append(hit);
+  const cross = sv("line", { y1: m.t, y2: m.t + ih, stroke: "var(--muted)", "stroke-width": 1, visibility: "hidden" });
+  svg.append(cross);
+  const showAt = (fx) => {
+    const t = t0 + fx * WINDOW_S;
+    let best = pts[0];
+    for (const s of pts) if (Math.abs(s.t - t) < Math.abs(best.t - t)) best = s;
+    const cx = x(best.t);
+    cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("visibility", "visible");
+    tip.replaceChildren(el("div", { class: "t", text: `${Math.round(now - best.t)} s ago` }),
+      ...[...series].reverse().map(o => el("div", { class: "row" },
+        el("span", { class: "key-line", style: `background:${orgColor(o)}` }), el("b", { text: val(best, key, o) }), el("span", { class: "n", text: o }))));
+    tip.style.display = "block";
+    const px = (cx / W) * host.clientWidth;
+    tip.style.left = `${Math.min(px + 12, host.clientWidth - tip.offsetWidth - 4)}px`;
+    tip.style.top = "8px";
+  };
+  hit.addEventListener("pointermove", ev => {
+    const r = svg.getBoundingClientRect();
+    hover[key] = Math.min(1, Math.max(0, ((ev.clientX - r.left) / r.width * W - m.l) / iw));
+    showAt(hover[key]);
+  });
+  hit.addEventListener("pointerleave", () => { hover[key] = null; cross.setAttribute("visibility", "hidden"); tip.style.display = "none"; });
+  if (hover[key] != null) showAt(hover[key]); else tip.style.display = "none";
+}
+window.addEventListener("resize", render);
+</script>
+</body>
+</html>

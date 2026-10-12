@@ -1,0 +1,20 @@
+[project]
+name = "db-job-scheduler"
+version = "0.1.0"
+description = "Database-backed job scheduling & execution system (Postgres only, no brokers)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "psycopg[binary]>=3.2,<4",
+    "psycopg-pool>=3.2,<4",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.uv]
+package = false
